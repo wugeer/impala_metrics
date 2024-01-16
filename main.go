@@ -96,7 +96,6 @@ func main() {
 	}
 
 	sleepInterval := time.Duration(config.IntervalSeconds) * time.Second
-	logger.Println(config)
 	httpServerPort := fmt.Sprintf(":%d", config.Port)
 	logger.Printf("sleepInterval: %v \nlisten on port: %v\nmetrics:%v\nnumWorkers:%d\n",
 		sleepInterval, httpServerPort, config.Metrics, config.NumWorkers)
