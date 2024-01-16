@@ -82,6 +82,36 @@ func parseFlags() {
 	flag.Parse()
 }
 
+func watchConfigFile(configFilePath string, ticker *time.Ticker, config *Config, logger *log.Logger) {
+	var lastModTime time.Time
+
+	for {
+		select {
+		case <-ticker.C:
+			fileInfo, err := os.Stat(configFilePath)
+			if err != nil {
+				logger.Printf("Error getting file info: %v", err)
+				continue
+			}
+
+			modTime := fileInfo.ModTime()
+			if modTime.After(lastModTime) {
+				logger.Println("Config file changed, reloading...")
+				newConfig, err := loadConfig(configFilePath, logger)
+				if err != nil {
+					logger.Printf("Error reloading config: %v", err)
+					continue
+				}
+
+				*config = *newConfig
+				logger.Printf("New config loaded: %+v", config)
+
+				lastModTime = modTime
+			}
+		}
+	}
+}
+
 func main() {
 	// 初始化日志器
 	cl := newCustomLogger()
@@ -94,6 +124,10 @@ func main() {
 	if err != nil {
 		logger.Fatalf("解析YAML时发生错误: %v", err)
 	}
+
+	// 设置用于检查配置文件的定时器
+	ticker := time.NewTicker(15 * time.Second) // 每15s检查一次配置文件
+	go watchConfigFile(configFilePath, ticker, config, logger)
 
 	sleepInterval := time.Duration(config.IntervalSeconds) * time.Second
 	httpServerPort := fmt.Sprintf(":%d", config.Port)
@@ -133,7 +167,7 @@ func main() {
 				jobs <- job{server: server}
 			}
 			wg.Wait()
-			time.Sleep(sleepInterval)
+			time.Sleep(time.Duration(config.IntervalSeconds) * time.Second)
 		}
 	}()
 
