@@ -5,88 +5,19 @@ import (
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"gopkg.in/yaml.v2"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
-
-	"github.com/PuerkitoBio/goquery"
 )
 
-type Config struct {
-	Servers         []string `yaml:"servers"`
-	IntervalSeconds int      `yaml:"intervalSeconds"`
-	Port            int      `yaml:"port"`
-	Metrics         []string `yaml:"metrics"`
-}
-
-var configFile string
-
-type Metrics struct {
-	Queue string
-	Value float64
-}
-
-// NewMetrics 初始化Metrics
-func NewMetrics(queue string, value float64) *Metrics {
-	return &Metrics{
-		Queue: queue,
-		Value: value,
-	}
-}
-
-func getMetricValue(url string, metricNames []string) (map[string][]*Metrics, error) {
-	// 发送 HTTP GET 请求
-	resp, err := http.Get(url)
-	if err != nil {
-		return map[string][]*Metrics{}, err
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Fatalf("resp.Body.Close() failed with %s\n", err)
-		}
-	}()
-
-	// 使用 goquery 解析 HTML
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return map[string][]*Metrics{}, err
-	}
-
-	// 初始化指标值为未找到
-	metricValue := map[string][]*Metrics{}
-
-	// 在 HTML 中查找指标
-	// 筛选table id为impala-server-tbl
-	// 这里没有id选择器，因为不同的指标在不同的id下
-	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
-		// 检查每个 <tr> 元素中是否包含指标名称
-		itemName := s.Find("td").First().Text()
-		for _, metricName := range metricNames {
-			if strings.HasPrefix(itemName, metricName) {
-				// 获取紧接着指标名称的 <td> 元素中的文本，即为指标值
-				queueName := strings.TrimPrefix(itemName, metricName+".")
-				// 从url中获取ip
-				//ip := strings.TrimPrefix(strings.Split(url, ":")[1], "//")
-				originValue := strings.TrimSpace(s.Find("td").Eq(1).Text())
-				actualValue, err := strconv.ParseFloat(originValue, 64)
-				if err != nil {
-					log.Fatalf("unable to case value %v to float64 with err %v", originValue, err)
-				}
-				metricValue[metricName] = append(metricValue[metricName], NewMetrics(queueName, actualValue))
-				break
-			}
-		}
-	})
-
-	return metricValue, nil
-}
+var configFilePath string
 
 var (
-	cmdLine                             = flag.NewFlagSet("question", flag.ExitOnError)
+	//cmdLine                             = flag.NewFlagSet("question", flag.ExitOnError)
 	admissionControllerLocalMemAdmitted = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "admission_controller_local_mem_admitted",
@@ -110,44 +41,70 @@ var (
 	)
 )
 
+// job 表示一个工作项，这里我们定义为服务器的server地址
+type job struct {
+	server string
+}
+
+// worker 函数表示每个工作者如何处理工作
+func worker(id int, jobs <-chan job, wg *sync.WaitGroup, logger *log.Logger, metricNames []string, prometheusMetricsNames map[string]*prometheus.GaugeVec) {
+	logger.Printf("worker %d started\n", id)
+	for j := range jobs {
+		processMetrics(j.server, metricNames, prometheusMetricsNames, logger)
+		wg.Done()
+	}
+}
+
+// processMetrics 处理指标抓取和更新
+func processMetrics(server string, metricNames []string, prometheusMetricsNames map[string]*prometheus.GaugeVec, logger *log.Logger) {
+	url := fmt.Sprintf("http://%v:25000/metrics", server)
+	logger.Printf("start to scrapy the metrics of server: %v\n", url)
+	value, err := getMetricValue(url, metricNames, logger)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// 遍历输出的map类型指标
+	for k, v := range value {
+		for _, v1 := range v {
+			prometheusMetricsNames[k].WithLabelValues(server, v1.Queue).Set(v1.Value)
+		}
+	}
+}
+
 func init() {
-	cmdLine.StringVar(&configFile, "config-file", "config.yml", "the config file with yaml format.")
 	prometheus.MustRegister(admissionControllerLocalMemAdmitted)
 	prometheus.MustRegister(admissionControllerLocalNumQueued)
 	prometheus.MustRegister(admissionControllerLocalNumAdmittedRunning)
 }
 
+func parseFlags() {
+	flag.StringVar(&configFilePath, "config-file", "config.yml", "the config file with yaml format.")
+	flag.Parse()
+}
+
 func main() {
+	// 初始化日志器
+	cl := newCustomLogger()
+	logger := log.New(cl, "", 0)
 
-	if err := cmdLine.Parse(os.Args[1:]); err != nil {
-		log.Fatalf("cmdLine.Parse(os.Args[1:]) failed with %s\n", err)
-	}
-	http.Handle("/metrics", promhttp.Handler())
+	// 解析命令行参数
+	parseFlags()
 
-	yamlFile, err := os.ReadFile(configFile)
+	config, err := loadConfig(configFilePath, logger)
 	if err != nil {
-		log.Fatalf("读取文件时发生错误: %v", err)
-	}
-
-	// 解析YAML文件
-	var config Config
-	err = yaml.Unmarshal(yamlFile, &config)
-	if err != nil {
-		log.Fatalf("解析YAML时发生错误: %v", err)
+		logger.Fatalf("解析YAML时发生错误: %v", err)
 	}
 
 	sleepInterval := time.Duration(config.IntervalSeconds) * time.Second
+	logger.Println(config)
 	httpServerPort := fmt.Sprintf(":%d", config.Port)
-	fmt.Printf("sleepInterval: %v \nlisten on port: %v\nmetrics:%v\n", sleepInterval, httpServerPort, config.Metrics)
+	logger.Printf("sleepInterval: %v \nlisten on port: %v\nmetrics:%v\nnumWorkers:%d\n",
+		sleepInterval, httpServerPort, config.Metrics, config.NumWorkers)
 
 	// 指定 URL 和指标名称
-	//metricNames := []string{
-	//	"admission-controller.local-mem-admitted",
-	//	"admission-controller.local-num-queued",
-	//	"admission-controller.local-num-admitted-running",
-	//}
 	metricNames := config.Metrics
 
+	// 预定义所有指标名称
 	allPrometheusMetricsNames := map[string]*prometheus.GaugeVec{
 		"admission-controller.local-mem-admitted":         admissionControllerLocalMemAdmitted,
 		"admission-controller.local-num-admitted-running": admissionControllerLocalNumAdmittedRunning,
@@ -161,30 +118,43 @@ func main() {
 		prometheusMetricsNames[metricName] = allPrometheusMetricsNames[metricName]
 	}
 
+	logger.Println("Start to collect Servers metrics")
+	numWorkers := config.NumWorkers // 定义工作者数量
+	jobs := make(chan job, len(config.Servers))
+	var wg sync.WaitGroup
+	for w := 1; w <= numWorkers; w++ {
+		go worker(w, jobs, &wg, logger, metricNames, prometheusMetricsNames)
+	}
+
 	go func() {
 		for {
-			fmt.Println("Start to collect Servers metrics")
+			// 分发工作
 			for _, server := range config.Servers {
-				// 将服务器地址和端口拼接成完整的 URL
-				url := fmt.Sprintf("http://%v:25000/metrics", server)
-				fmt.Printf("start to scrapy the metrics of server: %v\n", url)
-				value, err := getMetricValue(url, metricNames)
-				if err != nil {
-					log.Fatal(err)
-				}
-				// fmt.Printf("The value of '%s' is: %s\n", metricNames, value)
-				// 遍历输出的map类型指标
-				for k, v := range value {
-					for _, v1 := range v {
-						prometheusMetricsNames[k].WithLabelValues(server, v1.Queue).Set(v1.Value)
-					}
-				}
+				wg.Add(1)
+				jobs <- job{server: server}
 			}
+			wg.Wait()
 			time.Sleep(sleepInterval)
 		}
 	}()
 
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	// 启动处理信号的 goroutine
+	go func() {
+		sig := <-sigs
+		logger.Println("接收到信号:", sig)
+		// 关闭 jobs 通道，表示不再发送新工作
+		close(jobs)
+		// 可以在这里执行其他清理工作
+		os.Exit(0)
+	}()
+
 	// 启动HTTP服务器
-	fmt.Printf("start to listen on port %v\n", httpServerPort)
-	log.Fatal(http.ListenAndServe(httpServerPort, nil))
+	logger.Printf("start to listen on port %v\n", httpServerPort)
+	http.Handle("/metrics", promhttp.Handler())
+	if err := http.ListenAndServe(httpServerPort, nil); err != nil {
+		logger.Fatalf("http.ListenAndServe(httpServerPort, nil) failed with %s\n", err)
+	}
 }
