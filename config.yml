@@ -6,6 +6,12 @@ intervalSeconds: 300 # 每5分钟抓取一次
 port: 8080 # HTTP 服务器端口
 numWorkers: 10 # 10个worker并发抓取
 metrics:
-  - admission-controller.local-mem-admitted
-  - admission-controller.local-num-queued
-  - admission-controller.local-num-admitted-running
+  admission-controller.local-mem-admitted:
+    name: "admission_controller_local_mem_admitted"
+    help: "Admission controller local memory admitted"
+  admission-controller.local-num-queued:
+    name: "admission_controller_local_num_queued"
+    help: "Admission controller local number queued"
+  admission-controller.local-num-admitted-running:
+    name: "admission_controller_local_num_admitted_running"
+    help: "Admission controller local number admitted running"

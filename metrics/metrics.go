@@ -1,7 +1,8 @@
-package main
+package metrics
 
 import (
 	"github.com/PuerkitoBio/goquery"
+	"github.com/prometheus/client_golang/prometheus"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,7 +23,19 @@ func NewMetrics(queue string, value float64) *Metrics {
 	}
 }
 
-func getMetricValue(url string, metricNames []string, myLogger *log.Logger) (map[string][]*Metrics, error) {
+// CreateGaugeVec 根据提供的指标名称和帮助文本创建一个新的 prometheus.GaugeVec。
+func CreateGaugeVec(metricName string, helpText string) *prometheus.GaugeVec {
+	return prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricName,
+			Help: helpText,
+		},
+		[]string{"ip", "queue"},
+	)
+}
+
+// GetMetricValue 从指定url中获取对应的指标值
+func GetMetricValue(url string, metricNames []string, myLogger *log.Logger) (map[string][]*Metrics, error) {
 	// 发送 HTTP GET 请求
 	resp, err := http.Get(url)
 	if err != nil {

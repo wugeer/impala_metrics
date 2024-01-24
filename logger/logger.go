@@ -1,4 +1,4 @@
-package main
+package logger
 
 import (
 	"log"
@@ -13,6 +13,12 @@ import (
 // customLogger 是实现 io.Writer 接口的自定义日志器结构体
 type customLogger struct {
 	logger *log.Logger
+}
+
+func NewLogger() *log.Logger {
+	cl := newCustomLogger()
+	logger := log.New(cl, "", 0)
+	return logger
 }
 
 func newCustomLogger() *customLogger {
