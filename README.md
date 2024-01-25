@@ -1,7 +1,7 @@
 # impala Metrics Collector
 ## 介绍
 Impala Metrics Collector 是一个用于收集和处理 Apache Impala 相关度量指标的工具。它旨在简化监控和分析 Impala 性能的过程，提供了一个可配置的方式来获取、存储和可能的情况下分析关键性能指标。
-本工具抓取的impala 25000 webui页面的metrics数据，将其转换为prometheus格式，然后通过http接口暴露出来，供prometheus采集, 在25000/metrics上的指标支持在配置文件热加载的情况下动态添加(注意该配置项如何配置)
+本工具抓取的impala 25000 webui页面的metrics数据，将其转换为prometheus格式, 目前label只有ip和queue两个，然后通过http接口暴露出来，供prometheus采集, 在25000/metrics上的指标支持在配置文件热加载的情况下动态添加(注意该配置项如何配置)
 
 ## 特性
 - 指标收集: 自动收集来自 Impala 实例的关键性能指标。
@@ -59,6 +59,10 @@ go get -u github.com/PuerkitoBio/goquery
   admission-controller.local-mem-admitted:             # 这个是impala的指标名称，在25000/metrics页面根据这个名称查找对应的值
     name: "admission_controller_local_mem_admitted"    # 存储到prometheus中的指标名称
     help: "Admission controller local memory admitted" # 存储到prometheus中的指标描述
+```
+对应的prometheus指标样例为
+```bash
+admision_controller_local_mem_admitted{ip="host1",queue="default"} 0
 ```
 
 ## 运行
